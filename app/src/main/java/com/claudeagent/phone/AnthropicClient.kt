@@ -38,6 +38,10 @@ data class AnthropicResponse(
  * The current UI still validates keys with the legacy "sk-ant-" prefix. To
  * keep this patch surgical, users can enter: sk-ant-<GEMINI_API_KEY>.
  * This client strips that compatibility prefix before calling Google.
+ *
+ * Gemini 3 requires thoughtSignature metadata from functionCall parts to be
+ * returned verbatim on the next request. We keep that opaque signature inside
+ * Handy's internal block and restore it when converting history back to Gemini.
  */
 class AnthropicClient(apiKey: String) {
 
@@ -123,10 +127,13 @@ class AnthropicClient(apiKey: String) {
                     val anthropicContent = buildJsonArray {
                         parts.forEachIndexed { index, partEl ->
                             val part = partEl.jsonObject
+                            val thoughtSignature = part["thoughtSignature"]
+
                             part["text"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }?.let { t ->
                                 add(buildJsonObject {
                                     put("type", JsonPrimitive("text"))
                                     put("text", JsonPrimitive(t))
+                                    thoughtSignature?.let { put(GEMINI_SIGNATURE_FIELD, it) }
                                 })
                             }
 
@@ -141,6 +148,7 @@ class AnthropicClient(apiKey: String) {
                                     put("id", JsonPrimitive(id))
                                     put("name", JsonPrimitive(name))
                                     put("input", args)
+                                    thoughtSignature?.let { put(GEMINI_SIGNATURE_FIELD, it) }
                                 })
                             }
                         }
@@ -193,7 +201,10 @@ class AnthropicClient(apiKey: String) {
                     when (block["type"]?.jsonPrimitive?.content) {
                         "text" -> {
                             val text = block["text"]?.jsonPrimitive?.content.orEmpty()
-                            add(buildJsonObject { put("text", JsonPrimitive(text)) })
+                            add(buildJsonObject {
+                                put("text", JsonPrimitive(text))
+                                block[GEMINI_SIGNATURE_FIELD]?.let { put("thoughtSignature", it) }
+                            })
                         }
 
                         "image" -> {
@@ -210,6 +221,7 @@ class AnthropicClient(apiKey: String) {
                                     put("name", JsonPrimitive(name))
                                     put("args", input)
                                 })
+                                block[GEMINI_SIGNATURE_FIELD]?.let { put("thoughtSignature", it) }
                             })
                         }
 
@@ -281,6 +293,7 @@ class AnthropicClient(apiKey: String) {
     companion object {
         private const val GEMINI_MODEL = "gemini-3.1-flash-lite"
         private const val COMPAT_KEY_PREFIX = "sk-ant-"
+        private const val GEMINI_SIGNATURE_FIELD = "_gemini_thought_signature"
         private const val MAX_ATTEMPTS = 4
         private val BACKOFF_MS = longArrayOf(1_500L, 4_000L, 10_000L)
         private val RETRYABLE_STATUS = setOf(408, 429, 500, 502, 503, 504)
